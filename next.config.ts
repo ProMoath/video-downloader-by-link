@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import createNextIntlPlugin from 'next-intl/plugin';
+
+const withNextIntl = createNextIntlPlugin('./utils/request.ts');
 
 // Silence baseline-browser-mapping "old data" warnings during Next.js build/dev.
 // This warning is time-based and can break log-sensitive CI / reproducible builds.
@@ -11,4 +14,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 
 // TypeScript declaration for Instagram embed
 declare global {
@@ -31,6 +32,9 @@ export default function Page() {
   const [embedHtml, setEmbedHtml] = useState<string | null>(null);
   const [embedFailed, setEmbedFailed] = useState(false);
 
+  const t = useTranslations('HomePage');
+  const er = useTranslations('Errors');
+  
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 3500);
@@ -121,7 +125,7 @@ export default function Page() {
   function handleSetTheme(t: "light" | "dark" | "system", event: React.MouseEvent<HTMLButtonElement>) {
     setTheme(t);
     event.currentTarget.blur();
-    try { localStorage.setItem("vd_theme", t); } catch {}
+    try { localStorage.setItem("vd_theme", t); } catch { }
     applyTheme(t);
   }
 
@@ -135,14 +139,48 @@ export default function Page() {
     }
   }
 
+  async function parseApiError(res: Response) {
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      try {
+        const data = await res.json();
+        return {
+          code: data?.error || data?.code,
+          message: data?.message || res.statusText,
+          status: data?.status || res.status,
+        };
+      } catch {
+        // fall through to text parse
+      }
+    }
+    const text = await res.text().catch(() => "");
+    return { message: text || res.statusText || `HTTP ${res.status}`, status: res.status };
+  }
+
+  function mapDownloadError(error: { code?: string; message: string; status?: number }) {
+    if (error.code === "invalid_url") return t('toastInvalidUrl');
+    if (error.code === "youtube_id_error") return er('youtubeIdError');
+    if (error.code === "youtube_live") return er('youtubeLiveError');
+    if (error.code === "youtube_no_progressive") return er('youtubeNoProgressive');
+    if (error.code === "youtube_download_error") return er('youtubeDownloadError', { message: error.message });
+    if (error.code === "upstream_error") return er('upstreamError', { status: error.status || "" });
+    return er('genericDownloadError');
+  }
+
+  function isApiError(err: unknown): err is { code?: string; message: string; status?: number } {
+    if (typeof err !== 'object' || err === null) return false;
+    const record = err as Record<string, unknown>;
+    return 'message' in record && typeof record.message === 'string';
+  }
+
   async function handlePreview(e?: React.FormEvent) {
     if (e) e.preventDefault();
     if (!url.trim()) {
-      setToast("Ingresa una URL válida");
+      setToast(t('toastEmptyUrl'));
       return;
     }
     if (!validUrl(url.trim())) {
-      setToast("La URL no es válida");
+      setToast(t('toastInvalidUrl'));
       return;
     }
 
@@ -178,7 +216,7 @@ export default function Page() {
       // Para X/Twitter ahora usamos iframe oficial, no requiere widgets.js
     } catch (err) {
       console.error(err);
-      setToast("No se pudo resolver el enlace");
+      setToast(er('resolveFailed'));
       setProvider("unknown");
     } finally {
       setLoadingPreview(false);
@@ -196,14 +234,14 @@ export default function Page() {
 
     // Utilizamos fetch para obtener el archivo como Blob y disparar la descarga sin abrir pestañas
     setDownloadLoading(true);
-    setToast("Se está descargando el video...");
+    setToast(t('toastDownloading'));
 
     function filenameFromContentDisposition(cd: string | null): string | null {
       if (!cd) return null;
       // filename*=UTF-8''...
       const star = cd.match(/filename\*=(?:UTF-8''|)([^;\r\n]+)/i);
       if (star && star[1]) {
-        try { return decodeURIComponent(star[1].replace(/^"|"$/g, "")); } catch {}
+        try { return decodeURIComponent(star[1].replace(/^"|"$/g, "")); } catch { }
       }
       const normal = cd.match(/filename=("?)([^";\r\n]+)\1/i);
       if (normal && normal[2]) return normal[2];
@@ -214,8 +252,8 @@ export default function Page() {
       const proxyUrl = `/api/download?url=${encodeURIComponent(srcForDownload)}`;
       const res = await fetch(proxyUrl, { method: "GET" });
       if (!res.ok) {
-        const msg = await res.text().catch(() => "");
-        throw new Error(msg || `Fallo al descargar. Código ${res.status}`);
+        const apiError = await parseApiError(res);
+        throw apiError;
       }
 
       const blob = await res.blob();
@@ -234,10 +272,14 @@ export default function Page() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
 
-      setToast("Descarga iniciada");
+      setToast(t('toastDownloadStarted'));
     } catch (err: unknown) {
       console.error(err);
-      const msg = (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') ? err.message : "Ocurrió un error al descargar el video";
+      const msg = isApiError(err)
+        ? mapDownloadError(err)
+        : (typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message?: unknown }).message === 'string')
+          ? (err as { message: string }).message
+          : er('genericDownloadError');
       setToast(msg);
     } finally {
       setDownloadLoading(false);
@@ -250,7 +292,7 @@ export default function Page() {
       if (videoRef.current) {
         videoRef.current.pause();
       }
-    } catch {}
+    } catch { }
     setUrl("");
     setPreviewUrl(null);
     setProvider(null);
@@ -266,21 +308,21 @@ export default function Page() {
     if (!previewUrl) return;
     if (navigator.share) {
       try {
-        await navigator.share({ title: "Video", url });
-        setToast("Compartido");
+        await navigator.share({ title: t('shareTitle'), url });
+        setToast(t('shareButton'));
       } catch {
-        setToast("Cancelado");
+        setToast(t('toastShareCanceled'));
       }
       return;
     }
 
     try {
       await navigator.clipboard.writeText(url);
-      setToast("Enlace copiado al portapapeles");
+      setToast(t('toastClipboard'));
     } catch {
       // fallback: open new tab
       window.open(url, "_blank");
-      setToast("No se pudo acceder al portapapeles. Abriendo enlace...");
+      setToast(t('toastClipboardFailed'));
     }
   }
 
@@ -288,31 +330,31 @@ export default function Page() {
     <main className="min-h-screen bg-app text-app flex items-center justify-center p-6">
       <div className="w-full max-w-3xl">
         <div className="card shadow-lg rounded-2xl p-6 sm:p-10">
-          <h1 className="text-xl sm:text-2xl font-semibold text-app">Descargar y compartir videos</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-app">{t('title')}</h1>
           <div className="mt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
-            <p className="text-sm muted">Pega un enlace de video (YouTube, Instagram, Facebook o enlace directo) y previsualiza antes de descargar o compartir.</p>
+            <p className="text-sm muted">{t('description')}</p>
             <div className="sm:ml-4 inline-flex items-center gap-2">
-              <span className="text-xs muted">Tema</span>
-              <div className={`segmented ${theme === "light" ? "pos-light" : theme === "system" ? "pos-system" : "pos-dark"}`} role="tablist" aria-label="Tema">
+              <span className="text-xs muted">{t('themeLabel')}</span>
+              <div className={`segmented ${theme === "light" ? "pos-light" : theme === "system" ? "pos-system" : "pos-dark"}`} role="tablist" aria-label={t('themeLabel')}>
                 <div className="knob" aria-hidden />
-                <button type="button" onClick={(e) => handleSetTheme("light", e)} className={`option ${theme === "light" ? "active" : ""}`} aria-pressed={theme === "light"} aria-label="Tema claro" data-tooltip="Claro">
+                <button type="button" onClick={(e) => handleSetTheme("light", e)} className={`option ${theme === "light" ? "active" : ""}`} aria-pressed={theme === "light"} aria-label={t('themeLight')} data-tooltip={t('themeTooltipLight')}>
                   {/* Sun icon */}
                   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-                    <path d="M12 4V2M12 22v-2M4 12H2M22 12h-2M5 5l-1.5-1.5M20.5 20.5 19 19M5 19l-1.5 1.5M20.5 3.5 19 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M12 4V2M12 22v-2M4 12H2M22 12h-2M5 5l-1.5-1.5M20.5 20.5 19 19M5 19l-1.5 1.5M20.5 3.5 19 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
-                <button type="button" onClick={(e) => handleSetTheme("system", e)} className={`option ${theme === "system" ? "active" : ""}`} aria-pressed={theme === "system"} aria-label="Usar tema del sistema" data-tooltip="Sistema">
+                <button type="button" onClick={(e) => handleSetTheme("system", e)} className={`option ${theme === "system" ? "active" : ""}`} aria-pressed={theme === "system"} aria-label={t('themeSystem')} data-tooltip={t('themeTooltipSystem')}>
                   {/* Monitor/system icon */}
                   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-                    <rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                    <path d="M8 20h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M8 20h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 </button>
-                <button type="button" onClick={(e) => handleSetTheme("dark", e)} className={`option ${theme === "dark" ? "active" : ""}`} aria-pressed={theme === "dark"} aria-label="Tema oscuro" data-tooltip="Oscuro">
+                <button type="button" onClick={(e) => handleSetTheme("dark", e)} className={`option ${theme === "dark" ? "active" : ""}`} aria-pressed={theme === "dark"} aria-label={t('themeDark')} data-tooltip={t('themeTooltipDark')}>
                   {/* Moon icon */}
                   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-                    <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
               </div>
@@ -320,30 +362,30 @@ export default function Page() {
           </div>
 
           <form onSubmit={handlePreview} className="mt-6">
-            <label className="block text-sm font-medium text-app">Enlace del video</label>
+            <label className="block text-sm font-medium text-app">{t('videoLinkLabel')}</label>
             <div className="mt-2 flex flex-col sm:flex-row gap-2">
               <input
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://..."
+                placeholder={t('placeholder')}
                 className="w-full sm:flex-1 input"
-                aria-label="Enlace del video"
+                aria-label={t('videoLinkLabel')}
               />
               <button
                 type="submit"
                 disabled={loadingPreview || !url.trim()}
                 className="w-full sm:w-auto btn-primary px-4 py-3 font-medium shadow-md focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Previsualizar video
+                {t('previewButton')}
               </button>
               {(url.trim().length > 0 || !!previewUrl) && (
                 <button
                   type="button"
                   onClick={handleClear}
                   className="w-full sm:w-auto btn-ghost px-4 py-3 font-medium hover:shadow cursor-pointer"
-                  aria-label="Limpiar enlace y previsualización"
+                  aria-label={t('clearButton')}
                 >
-                  Limpiar
+                  {t('clearButton')}
                 </button>
               )}
             </div>
@@ -352,8 +394,8 @@ export default function Page() {
           <div className="mt-6">
             {!previewUrl && !embedHtml && (
               <div className="rounded-lg p-6 text-center muted border border-dashed border-(--border)">
-                <p>Para comenzar, introduce un enlace y pulsa &quot;Previsualizar video&quot;.</p>
-                <p className="mt-3 text-sm">Existen videos que no son descargables por causa de algun formato o el proveedor.</p>
+                <p>{t('emptyState')}</p>
+                <p className="mt-3 text-sm">{t('emptyStateNote')}</p>
               </div>
             )}
 
@@ -375,7 +417,7 @@ export default function Page() {
                     <div className="preview-embed-wrapper">
                       <iframe
                         src={previewUrl || undefined}
-                        title="Embed preview"
+                        title={t('embedPreviewTitle')}
                         className="preview-embed"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                         allowFullScreen
@@ -389,7 +431,7 @@ export default function Page() {
                         src={previewUrl || undefined}
                         className="preview-video"
                       >
-                        Tu navegador no soporta la etiqueta video.
+                            {t('videoNotSupported')}
                       </video>
                     </div>
                   ) : null}
@@ -403,8 +445,8 @@ export default function Page() {
                     className="w-full border bg-(--warning-bg) text-(--warning-text) border-(--warning-border) rounded-lg py-2.5 px-3"
                   >
                     {provider === "instagram"
-                      ? "No se pudo cargar la previsualización de Instagram en este navegador. Puedes abrir el reel en Instagram."
-                      : "No se pudo cargar la previsualización de Facebook en este navegador. Puedes abrir el video en Facebook."}
+                      ? er('instagramEmbedFailed')
+                      : er('facebookEmbedFailed')}
                   </div>
                 )}
 
@@ -415,27 +457,23 @@ export default function Page() {
                     aria-live="polite"
                     className="w-full border bg-(--warning-bg) text-(--warning-text) border-(--warning-border) rounded-lg py-2.5 px-3"
                   >
-                    {provider === "instagram"
-                      ? "Este video no es descargable desde Instagram. Puedes verlo en el sitio original."
-                      : provider === "facebook"
-                        ? "Este video no es descargable desde Facebook. Puedes verlo en el sitio original."
-                        : "No es posible descargar este video: el proveedor o formato es incompatible para su descarga."}
+                    {er('notDownloadable')}
                   </div>
                 )}
 
                 <div className="flex flex-col sm:flex-row gap-3">
                   <button
                     onClick={handleDownload}
-                      disabled={downloadLoading || !downloadable || (provider === "direct" && isHls)}
-                      className="disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer w-full sm:flex-1 inline-flex items-center justify-center gap-2 btn-primary px-4 py-3 font-medium shadow"
+                    disabled={downloadLoading || !downloadable || (provider === "direct" && isHls)}
+                    className="disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer w-full sm:flex-1 inline-flex items-center justify-center gap-2 btn-primary px-4 py-3 font-medium shadow"
                   >
                     {downloadLoading ? (
                       <>
-                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="white" strokeWidth="4" strokeOpacity="0.25"/></svg>
-                        Descargando...
+                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="white" strokeWidth="4" strokeOpacity="0.25" /></svg>
+                        {t('downloadLoading')}
                       </>
                     ) : (
-                      "Descargar"
+                      t('downloadButton')
                     )}
                   </button>
 
@@ -444,7 +482,7 @@ export default function Page() {
                       onClick={() => window.open(url, "_blank")}
                       className="cursor-pointer w-full sm:flex-1 inline-flex items-center justify-center gap-2 btn-ghost px-4 py-3 font-medium hover:shadow"
                     >
-                      Abrir en {provider === "instagram" ? "Instagram" : "Facebook"}
+                      {t('openIn')} {provider === "instagram" ? "Instagram" : "Facebook"}
                     </button>
                   )}
 
@@ -452,7 +490,7 @@ export default function Page() {
                     onClick={handleShare}
                     className="cursor-pointer w-full sm:flex-1 inline-flex items-center justify-center gap-2 btn-ghost px-4 py-3 font-medium hover:shadow"
                   >
-                    Compartir
+                    {t('shareButton')}
                   </button>
                 </div>
               </div>

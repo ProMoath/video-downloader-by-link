@@ -1,11 +1,35 @@
-import { NextRequest } from "next/server";
+import {NextRequest} from "next/server";
 import ytdl from "ytdl-core";
 import type { videoFormat } from "ytdl-core";
+import ar from "@/messages/ar.json";
+import en from "@/messages/en.json";
+import es from "@/messages/es.json";
 
 export const runtime = "nodejs";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
+
+const dictionaries = { ar, en, es } as const;
+type Locale = keyof typeof dictionaries;
+
+function getLocale(req: NextRequest): Locale {
+  const q = new URL(req.url).searchParams.get("locale");
+  if(q=="ar" || q == "en" || q == "es") return q;
+  return "en";
+}
+
+// Reads Errors.<key> from the right messages/*.json file and fills in
+// {placeholders}. One call, one line, always localized.
+function msg(locale: Locale,key: keyof typeof  en.Errors, vars?: Record<string, string | number>){
+  let text:string = dictionaries[locale].Errors[key]?? dictionaries.en.Errors[key];
+  if(vars){
+    for(const [k, v] of Object.entries(vars)){
+      text = text.replace(`${k}`, String(v));
+    }
+  }
+  return text;
+}
 
 function isHttpUrl(u: string) {
   try {
@@ -28,9 +52,10 @@ function inferFileName(target: string) {
 }
 
 export async function GET(req: NextRequest) {
+  const locale = getLocale(req);
   const u = new URL(req.url);
   const target = u.searchParams.get("url");
-  if (!target || !isHttpUrl(target)) return new Response("Invalid url", { status: 400 });
+  if (!target || !isHttpUrl(target)) return new Response(msg(locale,"resolveFailed"), { status: 400 });
 
   // If it's a YouTube URL, handle with ytdl-core
   const isYoutube = ytdl.validateURL(target);
@@ -55,7 +80,7 @@ export async function GET(req: NextRequest) {
             if (shortsIdx !== -1 && parts[shortsIdx + 1]) return parts[shortsIdx + 1];
           }
         } catch {}
-        throw new Error("No se pudo extraer el ID del video de YouTube");
+        throw new Error(msg(locale,"youtubeIdError"));
       };
 
       const videoId = getIdSafe(target);
@@ -72,7 +97,7 @@ export async function GET(req: NextRequest) {
       });
 
       if (info.videoDetails.isLiveContent) {
-        return new Response("Este video es en vivo y no es descargable.", { status: 400 });
+        return new Response(msg(locale,"youtubeLiveError"), { status: 400 });
       }
 
       // Elegir mejor formato progresivo (video+audio) priorizando MP4
@@ -95,7 +120,7 @@ export async function GET(req: NextRequest) {
       }
 
       if (!chosen) {
-        return new Response("No se encontró un formato progresivo (video+audio) para descargar.", { status: 400 });
+        return new Response(msg(locale,"youtubeNoProgressive"), { status: 400 });
       }
 
   const nodeStream = ytdl.downloadFromInfo(info, { format: chosen });
@@ -129,10 +154,10 @@ export async function GET(req: NextRequest) {
 
       return new Response(webStream, { status: 200, headers });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Error desconocido";
+      const message = err instanceof Error ? err.message : msg(locale,"unKnownError");
       console.error("youtube download error", message);
       // Propaga un mensaje legible al cliente
-      return new Response(`No se pudo descargar el video de YouTube: ${message}`, { status: 400 });
+      return new Response(msg(locale,"youtubeDownloadError",{message}), { status: 400 });
     }
   }
 
